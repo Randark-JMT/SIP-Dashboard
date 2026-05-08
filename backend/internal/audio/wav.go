@@ -102,29 +102,6 @@ func WriteWAVStereo(filePath string, left, right []int16) error {
 	return enc.Close()
 }
 
-	enc := wav.NewEncoder(f, sampleRate, bitDepth, numChannels, 1)
-
-	intSamples := make([]int, len(samples))
-	for i, s := range samples {
-		intSamples[i] = int(s)
-	}
-
-	buf := &audio.IntBuffer{
-		Data: intSamples,
-		Format: &audio.Format{
-			SampleRate:  sampleRate,
-			NumChannels: numChannels,
-		},
-		SourceBitDepth: bitDepth,
-	}
-
-	if err := enc.Write(buf); err != nil {
-		return fmt.Errorf("write pcm: %w", err)
-	}
-
-	return enc.Close()
-}
-
 // PCMToFloat32 将 int16 PCM 转换为 float32 [-1, 1]，用于 WebSocket 实时推送
 func PCMToFloat32(samples []int16) []float32 {
 	out := make([]float32, len(samples))

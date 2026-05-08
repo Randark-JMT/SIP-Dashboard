@@ -29,7 +29,7 @@ type client struct {
 type Hub struct {
 	mu         sync.RWMutex
 	clients    map[*client]struct{}
-	broadcast  chan []byte // JSON 事件广播
+	broadcast  chan []byte            // JSON 事件广播
 	audioChans map[string]chan []byte // callID -> PCM 音频帧 channel
 }
 

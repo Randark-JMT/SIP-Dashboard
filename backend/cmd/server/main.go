@@ -15,15 +15,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/emiago/sipgo/sip"
-	"github.com/gin-gonic/gin"
 	"sip-dashboard/internal/api"
 	"sip-dashboard/internal/audio"
 	"sip-dashboard/internal/capture"
-	sipmod "sip-dashboard/internal/sip"
 	"sip-dashboard/internal/rtp"
+	sipmod "sip-dashboard/internal/sip"
 	"sip-dashboard/internal/store"
 	"sip-dashboard/internal/ws"
+
+	"github.com/emiago/sipgo/sip"
+	"github.com/gin-gonic/gin"
 )
 
 func main() {

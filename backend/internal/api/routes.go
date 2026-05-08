@@ -6,18 +6,19 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"sip-dashboard/internal/sip"
 	"sip-dashboard/internal/store"
 	"sip-dashboard/internal/ws"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Server 包含所有 API 依赖
 type Server struct {
-	db       *store.DB
-	hub      *ws.Hub
-	sm       *sip.StateMachine
-	recDir   string
+	db     *store.DB
+	hub    *ws.Hub
+	sm     *sip.StateMachine
+	recDir string
 }
 
 // NewServer 创建 API 服务

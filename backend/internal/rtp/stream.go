@@ -21,14 +21,14 @@ type rtpPacket struct {
 
 // Stream RTP 流重组器，负责按序收集 RTP payload 并解码为 PCM
 type Stream struct {
-	mu           sync.Mutex
-	callID       string
-	payloadType  int
-	lastSeq      uint16
-	initialized  bool
-	buf          []rtpPacket          // 乱序缓冲
-	pcmOut       chan []int16          // 输出 PCM 数据
-	rawOut       chan []byte           // 输出原始 RTP payload (用于实时流)
+	mu          sync.Mutex
+	callID      string
+	payloadType int
+	lastSeq     uint16
+	initialized bool
+	buf         []rtpPacket  // 乱序缓冲
+	pcmOut      chan []int16 // 输出 PCM 数据
+	rawOut      chan []byte  // 输出原始 RTP payload (用于实时流)
 }
 
 // NewStream 创建新的 RTP 流重组器
@@ -75,7 +75,7 @@ func (s *Stream) AddRawUDP(udpPayload []byte) {
 		if offset+4 > len(udpPayload) {
 			return
 		}
-		extLen := int(binary.BigEndian.Uint16(udpPayload[offset+2:offset+4]))
+		extLen := int(binary.BigEndian.Uint16(udpPayload[offset+2 : offset+4]))
 		offset += 4 + extLen*4
 	}
 

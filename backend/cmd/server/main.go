@@ -145,6 +145,10 @@ func main() {
 				payload := event.Payload.(sipmod.ActiveCallPayload)
 				if payload.Status == sipmod.StatusConnected {
 					sess, ok := sm.GetSession(payload.CallID)
+					// 防止 B2BUA 两腿 200 OK 导致重复注册
+					if _, alreadyRegistered := rtpStreams[payload.CallID]; alreadyRegistered {
+						break
+					}
 					if ok && sess.RTPAddressB != "" {
 						streamB := rtp.NewStream(payload.CallID, sess.CodecPayload)
 						streamA := rtp.NewStream(payload.CallID, sess.CodecPayload)

@@ -69,13 +69,23 @@ func (sm *StateMachine) handleResponse(resp *sip.Response) {
 	case code == 180 || code == 183:
 		sm.updateStatus(session, StatusRinging)
 	case code == 200:
+		// 若已经是 connected 状态（B2BUA 两腿各自发 200 OK），忽略重复处理
+		sm.mu.RLock()
+		alreadyConnected := session.Status == StatusConnected
+		sm.mu.RUnlock()
+		if alreadyConnected {
+			return
+		}
 		// 200 OK 可能携带 SDP（被叫侧的 RTP 信息）
 		body := string(resp.Body())
 		if body != "" {
 			sdp, err := ParseSDP(body)
 			if err == nil {
 				sm.mu.Lock()
-				session.RTPAddressB = fmt.Sprintf("%s:%d", sdp.IP, sdp.AudioPort)
+				// 仅在尚未设置时才写入，避免 B2BUA 第二腿覆盖第一腿的地址
+				if session.RTPAddressB == "" {
+					session.RTPAddressB = fmt.Sprintf("%s:%d", sdp.IP, sdp.AudioPort)
+				}
 				sm.mu.Unlock()
 				log.Printf("[SIP] CallID=%s callee RTP=%s codec=%d", callID, session.RTPAddressB, sdp.CodecPayload)
 			}

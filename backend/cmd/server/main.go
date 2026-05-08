@@ -176,7 +176,6 @@ func main() {
 					stream.Close()
 					delete(rtpStreams, callID)
 				}
-				hub.UnregisterAudioStream(callID)
 
 				// 取出 done channel，在独立 goroutine 中等待 PCM 数据就绪后写 WAV 并更新数据库
 				var doneCh <-chan []int16

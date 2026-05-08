@@ -27,18 +27,16 @@ type client struct {
 
 // Hub 管理所有 WebSocket 连接的发布-订阅中心
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[*client]struct{}
-	broadcast  chan []byte            // JSON 事件广播
-	audioChans map[string]chan []byte // callID -> PCM 音频帧 channel
+	mu        sync.RWMutex
+	clients   map[*client]struct{}
+	broadcast chan []byte // JSON 事件广播
 }
 
 // NewHub 创建新的 Hub
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[*client]struct{}),
-		broadcast:  make(chan []byte, 256),
-		audioChans: make(map[string]chan []byte),
+		clients:   make(map[*client]struct{}),
+		broadcast: make(chan []byte, 256),
 	}
 }
 
@@ -72,39 +70,8 @@ func (h *Hub) BroadcastEvent(event interface{}) {
 	}
 }
 
-// RegisterAudioStream 注册通话的音频流 channel
-func (h *Hub) RegisterAudioStream(callID string) chan []byte {
-	ch := make(chan []byte, 1024)
-	h.mu.Lock()
-	h.audioChans[callID] = ch
-	h.mu.Unlock()
-	return ch
-}
-
-// UnregisterAudioStream 注销音频流，关闭对应 channel
-func (h *Hub) UnregisterAudioStream(callID string) {
-	h.mu.Lock()
-	if ch, ok := h.audioChans[callID]; ok {
-		close(ch)
-		delete(h.audioChans, callID)
-	}
-	h.mu.Unlock()
-}
-
-// PushAudio 向指定通话的音频流推送 PCM 帧
+// PushAudio 向指定通话的音频流推送 PCM 帧（转发给所有订阅该 callID 的 WebSocket 客户端）
 func (h *Hub) PushAudio(callID string, pcm []byte) {
-	h.mu.RLock()
-	ch, ok := h.audioChans[callID]
-	h.mu.RUnlock()
-	if !ok {
-		return
-	}
-	select {
-	case ch <- pcm:
-	default:
-	}
-
-	// 同时转发给订阅该 callID 的 WebSocket 客户端
 	h.mu.RLock()
 	for c := range h.clients {
 		if c.isBin && c.callID == callID {

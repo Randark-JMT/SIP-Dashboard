@@ -101,6 +101,23 @@ func (sm *StateMachine) handleInvite(req *sip.Request, callID string) {
 	sm.mu.Lock()
 	session, exists := sm.sessions[callID]
 	if !exists {
+		// 检查是否已有相同主被叫号码的活跃会话（B2BUA 两腿去重）
+		// 在 0.5 毫秒时间窗口内，From+To 或 To+From 相同的视为同一通话
+		const dedupeWindow = 500 * time.Millisecond
+		for existingID, s := range sm.sessions {
+			if existingID == callID {
+				continue
+			}
+			sameParties := (s.FromNumber == fromNumber && s.ToNumber == toNumber) ||
+				(s.FromNumber == toNumber && s.ToNumber == fromNumber)
+			if sameParties && time.Since(s.StartTime) <= dedupeWindow {
+				// 将新 Call-ID 映射到已有会话，忽略此 INVITE
+				sm.sessions[callID] = s
+				log.Printf("[SIP] B2BUA dedup: CallID=%s merged into existing CallID=%s", callID, existingID)
+				sm.mu.Unlock()
+				return
+			}
+		}
 		session = &CallSession{
 			CallID:     callID,
 			FromNumber: fromNumber,
@@ -184,7 +201,12 @@ func (sm *StateMachine) terminateSession(callID string, status CallStatus) {
 		duration = int(now.Sub(*session.ConnectTime).Seconds())
 	}
 	recordingPath := session.RecordingPath
-	delete(sm.sessions, callID)
+	// 删除所有指向同一 session 的 Call-ID（B2BUA 合并场景）
+	for k, s := range sm.sessions {
+		if s == session {
+			delete(sm.sessions, k)
+		}
+	}
 	sm.mu.Unlock()
 
 	sm.emit(SIPEvent{

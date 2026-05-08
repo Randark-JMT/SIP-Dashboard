@@ -56,13 +56,7 @@ jobs:
             ./cmd/server
         working-directory: backend
 
-      # ── Package & Release ─────────────────────────────────────────────────
-      - name: Compress binary
-        run: |
-          tar -czf dist/sip-dashboard-linux-amd64.tar.gz \
-            -C dist sip-dashboard \
-            build.sh
-
+      # ── Release ───────────────────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -74,15 +68,13 @@ jobs:
 
             ```bash
             # 1. 下载
-            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/sip-dashboard-linux-amd64.tar.gz
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/sip-dashboard
 
-            # 2. 解压
-            tar -xzf sip-dashboard-linux-amd64.tar.gz
-
-            # 3. 赋予网络抓包权限（无需 sudo 运行）
+            # 2. 赋予执行和网络抓包权限
+            chmod +x sip-dashboard
             sudo setcap cap_net_raw,cap_net_admin+eip ./sip-dashboard
 
-            # 4. 运行（eth0 替换为实际网卡名，用 ip link 查看）
+            # 3. 运行（eth0 替换为实际网卡名，用 ip link 查看）
             ./sip-dashboard --interface eth0 --listen :8080
             ```
 
@@ -96,7 +88,7 @@ jobs:
             | `--recordings` | `recordings/` | WAV 录音保存目录 |
             | `--rtp-min` | `10000` | RTP 端口范围下限 |
             | `--rtp-max` | `20000` | RTP 端口范围上限 |
-          files: dist/sip-dashboard-linux-amd64.tar.gz
+          files: dist/sip-dashboard
           generate_release_notes: false
           draft: false
           prerelease: false

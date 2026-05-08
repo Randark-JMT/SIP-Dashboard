@@ -15,15 +15,15 @@ type DB struct {
 
 // Call 对应数据库中的一条通话记录
 type Call struct {
-	ID            int64
-	CallID        string
-	FromNumber    string
-	ToNumber      string
-	StartTime     time.Time
-	EndTime       *time.Time
-	DurationSecs  *int
-	RecordingPath *string
-	Status        string
+	ID            int64      `json:"id"`
+	CallID        string     `json:"callId"`
+	FromNumber    string     `json:"fromNumber"`
+	ToNumber      string     `json:"toNumber"`
+	StartTime     time.Time  `json:"startTime"`
+	EndTime       *time.Time `json:"endTime,omitempty"`
+	DurationSecs  *int       `json:"durationSecs,omitempty"`
+	RecordingPath *string    `json:"recordingPath,omitempty"`
+	Status        string     `json:"status"`
 }
 
 // Open 打开/创建 SQLite 数据库并初始化表结构

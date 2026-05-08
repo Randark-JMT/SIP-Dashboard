@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -118,8 +119,9 @@ func main() {
 
 	// 处理 SIP 事件（广播到 WebSocket + 写数据库 + 管理 RTP 流）
 	go func() {
-		// callID -> RTP stream
-		rtpStreams := make(map[string]*rtp.Stream)
+		// callID -> RTP streams (A leg, B leg)
+		type rtpPair struct{ a, b *rtp.Stream }
+		rtpStreams := make(map[string]rtpPair)
 		// callID -> PCM 完成通道（goroutine 结束后写入完整 PCM 数据）
 		pcmDones := make(map[string]chan []int16)
 
@@ -144,26 +146,56 @@ func main() {
 				if payload.Status == sipmod.StatusConnected {
 					sess, ok := sm.GetSession(payload.CallID)
 					if ok && sess.RTPAddressB != "" {
-						stream := rtp.NewStream(payload.CallID, sess.CodecPayload)
-						rtpStreams[payload.CallID] = stream
-						rtpCapture.RegisterStream(sess.RTPAddressB, stream)
+						streamB := rtp.NewStream(payload.CallID, sess.CodecPayload)
+						streamA := rtp.NewStream(payload.CallID, sess.CodecPayload)
+						rtpStreams[payload.CallID] = rtpPair{a: streamA, b: streamB}
+						rtpCapture.RegisterStream(sess.RTPAddressB, streamB)
 						if sess.RTPAddressA != "" {
-							rtpCapture.RegisterStream(sess.RTPAddressA, stream)
+							rtpCapture.RegisterStream(sess.RTPAddressA, streamA)
 						}
 						log.Printf("[Main] RTP stream registered for call %s", payload.CallID)
 
 						// 消费 PCM 数据：本地积累，完成后写入 done channel，避免与主循环竞争
 						doneCh := make(chan []int16, 1)
 						pcmDones[payload.CallID] = doneCh
-						go func(callID string, s *rtp.Stream, done chan<- []int16) {
-							var localPCM []int16
-							for pcm := range s.PCMOut() {
-								localPCM = append(localPCM, pcm...)
-								// 同时推送实时音频（int16 little-endian bytes）
-								hub.PushAudio(callID, int16SliceToBytes(pcm))
+						go func(callID string, sA, sB *rtp.Stream, done chan<- []int16) {
+							var pcmA, pcmB []int16
+							var wg sync.WaitGroup
+							wg.Add(2)
+							go func() {
+								defer wg.Done()
+								for pcm := range sA.PCMOut() {
+									pcmA = append(pcmA, pcm...)
+								}
+							}()
+							go func() {
+								defer wg.Done()
+								for pcm := range sB.PCMOut() {
+									pcmB = append(pcmB, pcm...)
+									// 实时推送 B 路（被叫→主叫方向，一般是对方说话）
+									hub.PushAudio(callID, int16SliceToBytes(pcm))
+								}
+							}()
+							wg.Wait()
+							// 混音：逐采样平均，长度取两者最长
+							n := len(pcmA)
+							if len(pcmB) > n {
+								n = len(pcmB)
 							}
-							done <- localPCM
-						}(payload.CallID, stream, doneCh)
+							mixed := make([]int16, n)
+							for i := range mixed {
+								var a, b int32
+								if i < len(pcmA) {
+									a = int32(pcmA[i])
+								}
+								if i < len(pcmB) {
+									b = int32(pcmB[i])
+								}
+								sum := (a + b) / 2
+								mixed[i] = int16(sum)
+							}
+							done <- mixed
+						}(payload.CallID, streamA, streamB, doneCh)
 					}
 				}
 
@@ -172,8 +204,9 @@ func main() {
 				callID := payload.CallID
 
 				// 关闭 RTP 流（会关闭 PCMOut channel，令 PCM goroutine 退出）
-				if stream, ok := rtpStreams[callID]; ok {
-					stream.Close()
+				if pair, ok := rtpStreams[callID]; ok {
+					pair.a.Close()
+					pair.b.Close()
 					delete(rtpStreams, callID)
 				}
 

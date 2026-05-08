@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*.*.*'
+    # manual trigger via workflow_dispatch
+  workflow_dispatch:
 
 permissions:
   contents: write

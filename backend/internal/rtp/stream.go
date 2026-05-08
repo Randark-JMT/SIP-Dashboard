@@ -19,16 +19,22 @@ type rtpPacket struct {
 	payload []byte
 }
 
+// ssrcInfo 每个 SSRC 独立的序列号追踪状态
+type ssrcInfo struct {
+	lastSeq     uint16
+	initialized bool
+	buf         []rtpPacket
+}
+
 // Stream RTP 流重组器，负责按序收集 RTP payload 并解码为 PCM
+// 支持同一通话中主叫和被叫两个方向（不同 SSRC）的数据
 type Stream struct {
 	mu          sync.Mutex
 	callID      string
 	payloadType int
-	lastSeq     uint16
-	initialized bool
-	buf         []rtpPacket  // 乱序缓冲
-	pcmOut      chan []int16 // 输出 PCM 数据
-	rawOut      chan []byte  // 输出原始 RTP payload (用于实时流)
+	ssrcs       map[uint32]*ssrcInfo // 按 SSRC 独立追踪序列号
+	pcmOut      chan []int16         // 输出 PCM 数据
+	rawOut      chan []byte          // 输出原始 RTP payload (用于实时流)
 }
 
 // NewStream 创建新的 RTP 流重组器
@@ -36,6 +42,7 @@ func NewStream(callID string, payloadType int) *Stream {
 	return &Stream{
 		callID:      callID,
 		payloadType: payloadType,
+		ssrcs:       make(map[uint32]*ssrcInfo),
 		pcmOut:      make(chan []int16, 512),
 		rawOut:      make(chan []byte, 512),
 	}
@@ -65,6 +72,7 @@ func (s *Stream) AddRawUDP(udpPayload []byte) {
 	// Bytes 8-11: SSRC
 	pt := int(udpPayload[1] & 0x7F)
 	seq := binary.BigEndian.Uint16(udpPayload[2:4])
+	ssrc := binary.BigEndian.Uint32(udpPayload[8:12])
 
 	// CSRC 偏移
 	cc := int(udpPayload[0] & 0x0F)
@@ -94,24 +102,31 @@ func (s *Stream) AddRawUDP(udpPayload []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.initialized {
-		s.lastSeq = seq - 1
-		s.initialized = true
+	// 按 SSRC 获取或创建独立的序列号追踪状态
+	si, ok := s.ssrcs[ssrc]
+	if !ok {
+		si = &ssrcInfo{}
+		s.ssrcs[ssrc] = si
+	}
+
+	if !si.initialized {
+		si.lastSeq = seq - 1
+		si.initialized = true
 	}
 
 	pkt := rtpPacket{seq: seq, payload: payload}
-	s.buf = append(s.buf, pkt)
+	si.buf = append(si.buf, pkt)
 
 	// 尝试按序输出
-	s.flush()
+	s.flushSSRC(si)
 }
 
-// flush 将缓冲区中按序的包输出
-func (s *Stream) flush() {
+// flushSSRC 将指定 SSRC 缓冲区中按序的包输出
+func (s *Stream) flushSSRC(si *ssrcInfo) {
 	for {
-		next := s.lastSeq + 1
+		next := si.lastSeq + 1
 		found := -1
-		for i, p := range s.buf {
+		for i, p := range si.buf {
 			if p.seq == next {
 				found = i
 				break
@@ -119,17 +134,17 @@ func (s *Stream) flush() {
 		}
 		if found < 0 {
 			// 在容忍窗口内等待，超出则跳过
-			if len(s.buf) >= reorderWindowSize {
+			if len(si.buf) >= reorderWindowSize {
 				log.Printf("[RTP] stream %s: gap at seq %d, skipping", s.callID, next)
-				s.buf = s.buf[1:]
-				s.lastSeq = next
+				si.buf = si.buf[1:]
+				si.lastSeq = next
 			}
 			return
 		}
 
-		pkt := s.buf[found]
-		s.buf = append(s.buf[:found], s.buf[found+1:]...)
-		s.lastSeq = pkt.seq
+		pkt := si.buf[found]
+		si.buf = append(si.buf[:found], si.buf[found+1:]...)
+		si.lastSeq = pkt.seq
 
 		// 输出原始 payload（用于实时流）
 		rawCopy := make([]byte, len(pkt.payload))

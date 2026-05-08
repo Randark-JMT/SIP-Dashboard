@@ -120,8 +120,8 @@ func main() {
 	go func() {
 		// callID -> RTP stream
 		rtpStreams := make(map[string]*rtp.Stream)
-		// callID -> PCM buffer
-		pcmBuffers := make(map[string][]int16)
+		// callID -> PCM 完成通道（goroutine 结束后写入完整 PCM 数据）
+		pcmDones := make(map[string]chan []int16)
 
 		for event := range eventChan {
 			hub.BroadcastEvent(event)
@@ -137,7 +137,6 @@ func main() {
 					StartTime:  payload.StartTime,
 					Status:     "active",
 				})
-				pcmBuffers[payload.CallID] = nil
 
 			case "CALL_STATUS":
 				// 当通话进入 connected 状态时，注册 RTP 流
@@ -153,15 +152,18 @@ func main() {
 						}
 						log.Printf("[Main] RTP stream registered for call %s", payload.CallID)
 
-						// 消费 PCM 数据
-						go func(callID string, s *rtp.Stream) {
+						// 消费 PCM 数据：本地积累，完成后写入 done channel，避免与主循环竞争
+						doneCh := make(chan []int16, 1)
+						pcmDones[payload.CallID] = doneCh
+						go func(callID string, s *rtp.Stream, done chan<- []int16) {
+							var localPCM []int16
 							for pcm := range s.PCMOut() {
-								pcmBuffers[callID] = append(pcmBuffers[callID], pcm...)
+								localPCM = append(localPCM, pcm...)
 								// 同时推送实时音频（int16 little-endian bytes）
-								bts := int16SliceToBytes(pcm)
-								hub.PushAudio(callID, bts)
+								hub.PushAudio(callID, int16SliceToBytes(pcm))
 							}
-						}(payload.CallID, stream)
+							done <- localPCM
+						}(payload.CallID, stream, doneCh)
 					}
 				}
 
@@ -169,33 +171,40 @@ func main() {
 				payload := event.Payload.(sipmod.CallEndPayload)
 				callID := payload.CallID
 
-				// 关闭 RTP 流
+				// 关闭 RTP 流（会关闭 PCMOut channel，令 PCM goroutine 退出）
 				if stream, ok := rtpStreams[callID]; ok {
 					stream.Close()
 					delete(rtpStreams, callID)
 				}
 				hub.UnregisterAudioStream(callID)
 
-				// 写 WAV 文件
-				recPath := ""
-				if pcm, ok := pcmBuffers[callID]; ok && len(pcm) > 0 {
-					safeID := strings.ReplaceAll(callID, "@", "_")
-					safeID = strings.ReplaceAll(safeID, "/", "_")
-					filename := fmt.Sprintf("%s_%s.wav",
-						time.Now().Format("20060102_150405"), safeID[:min(len(safeID), 20)])
-					recPath = filepath.Join(*recDir, filename)
-					if err := audio.WriteWAV(recPath, pcm); err != nil {
-						log.Printf("[Main] write WAV error: %v", err)
-						recPath = ""
-					} else {
-						log.Printf("[Main] WAV written: %s", recPath)
-					}
-					delete(pcmBuffers, callID)
+				// 取出 done channel，在独立 goroutine 中等待 PCM 数据就绪后写 WAV 并更新数据库
+				var doneCh <-chan []int16
+				if ch, ok := pcmDones[callID]; ok {
+					doneCh = ch
+					delete(pcmDones, callID)
 				}
-
-				// 更新数据库
-				status := "completed"
-				db.UpdateCallEnd(callID, time.Now(), payload.Duration, recPath, status)
+				go func(callID string, dur int, done <-chan []int16) {
+					var pcm []int16
+					if done != nil {
+						pcm = <-done
+					}
+					recPath := ""
+					if len(pcm) > 0 {
+						safeID := strings.ReplaceAll(callID, "@", "_")
+						safeID = strings.ReplaceAll(safeID, "/", "_")
+						filename := fmt.Sprintf("%s_%s.wav",
+							time.Now().Format("20060102_150405"), safeID[:min(len(safeID), 20)])
+						recPath = filepath.Join(*recDir, filename)
+						if err := audio.WriteWAV(recPath, pcm); err != nil {
+							log.Printf("[Main] write WAV error: %v", err)
+							recPath = ""
+						} else {
+							log.Printf("[Main] WAV written: %s", recPath)
+						}
+					}
+					db.UpdateCallEnd(callID, time.Now(), dur, recPath, "completed")
+				}(callID, payload.Duration, doneCh)
 			}
 		}
 	}()

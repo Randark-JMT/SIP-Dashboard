@@ -27,6 +27,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// version 由 ldflags 在构建时注入（如 -X main.version=v1.0.0）
+var version = "dev"
+
 func main() {
 	iface := flag.String("interface", "eth0", "Network interface to capture on")
 	listen := flag.String("listen", ":8080", "HTTP listen address")
@@ -34,7 +37,15 @@ func main() {
 	recDir := flag.String("recordings", "recordings", "Directory to store WAV recordings")
 	rtpMin := flag.Int("rtp-min", 10000, "RTP port range minimum")
 	rtpMax := flag.Int("rtp-max", 20000, "RTP port range maximum")
+	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVer {
+		fmt.Println("sip-dashboard", version)
+		os.Exit(0)
+	}
+
+	log.Printf("[Main] SIP Dashboard %s starting", version)
 
 	// 确保录音目录存在
 	if err := os.MkdirAll(*recDir, 0755); err != nil {

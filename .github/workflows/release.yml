@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Frontend ──────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+      # ── Go backend ────────────────────────────────────────────────────────
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: backend/go.sum
+
+      - name: Install libpcap
+        run: sudo apt-get install -y libpcap-dev
+
+      - name: Build Linux amd64
+        env:
+          CGO_ENABLED: '1'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p ../dist
+          go build \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o ../dist/sip-dashboard \
+            ./cmd/server
+        working-directory: backend
+
+      # ── Package & Release ─────────────────────────────────────────────────
+      - name: Compress binary
+        run: |
+          tar -czf dist/sip-dashboard-linux-amd64.tar.gz \
+            -C dist sip-dashboard \
+            build.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SIP Dashboard ${{ github.ref_name }}
+          body: |
+            ## SIP Dashboard ${{ github.ref_name }}
+
+            ### 安装方式（FreePBX 服务器）
+
+            ```bash
+            # 1. 下载
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/sip-dashboard-linux-amd64.tar.gz
+
+            # 2. 解压
+            tar -xzf sip-dashboard-linux-amd64.tar.gz
+
+            # 3. 赋予网络抓包权限（无需 sudo 运行）
+            sudo setcap cap_net_raw,cap_net_admin+eip ./sip-dashboard
+
+            # 4. 运行（eth0 替换为实际网卡名，用 ip link 查看）
+            ./sip-dashboard --interface eth0 --listen :8080
+            ```
+
+            ### 运行参数
+
+            | 参数 | 默认值 | 说明 |
+            |------|--------|------|
+            | `--interface` | `eth0` | 抓包网卡（用 `ip link` 查看）|
+            | `--listen` | `:8080` | HTTP 监听地址 |
+            | `--db` | `sip-dashboard.db` | SQLite 数据库路径 |
+            | `--recordings` | `recordings/` | WAV 录音保存目录 |
+            | `--rtp-min` | `10000` | RTP 端口范围下限 |
+            | `--rtp-max` | `20000` | RTP 端口范围上限 |
+          files: dist/sip-dashboard-linux-amd64.tar.gz
+          generate_release_notes: false
+          draft: false
+          prerelease: false

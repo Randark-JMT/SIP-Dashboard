@@ -211,6 +211,8 @@ func (sm *StateMachine) terminateSession(callID string, status CallStatus) {
 		duration = int(now.Sub(*session.ConnectTime).Seconds())
 	}
 	recordingPath := session.RecordingPath
+	// 使用 session 创建时保存的主 Call-ID，确保与 rtpStreams/db 中的 key 一致
+	canonicalCallID := session.CallID
 	// 删除所有指向同一 session 的 Call-ID（B2BUA 合并场景）
 	for k, s := range sm.sessions {
 		if s == session {
@@ -222,7 +224,7 @@ func (sm *StateMachine) terminateSession(callID string, status CallStatus) {
 	sm.emit(SIPEvent{
 		Type: "CALL_END",
 		Payload: CallEndPayload{
-			CallID:        callID,
+			CallID:        canonicalCallID,
 			Duration:      duration,
 			RecordingPath: recordingPath,
 		},

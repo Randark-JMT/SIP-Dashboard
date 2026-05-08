@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -121,9 +120,13 @@ func main() {
 	go func() {
 		// callID -> RTP streams (A leg, B leg)
 		type rtpPair struct{ a, b *rtp.Stream }
+		type pcmPair struct {
+			left  []int16
+			right []int16
+		}
 		rtpStreams := make(map[string]rtpPair)
 		// callID -> PCM 完成通道（goroutine 结束后写入完整 PCM 数据）
-		pcmDones := make(map[string]chan []int16)
+		pcmDones := make(map[string]chan pcmPair)
 
 		for event := range eventChan {
 			hub.BroadcastEvent(event)
@@ -159,34 +162,76 @@ func main() {
 						}
 						log.Printf("[Main] RTP stream registered for call %s", payload.CallID)
 
-						// 消费 PCM 数据：本地积累，完成后写入 done channel，避免与主循环竞争
-						doneCh := make(chan []int16, 1)
+						// 消费 PCM 数据：分别保留左右声道，并输出实时立体声音频
+						doneCh := make(chan pcmPair, 1)
 						pcmDones[payload.CallID] = doneCh
-						go func(callID string, sA, sB *rtp.Stream, done chan<- []int16) {
+						go func(callID string, sA, sB *rtp.Stream, done chan<- pcmPair) {
 							var pcmA, pcmB []int16
-							var wg sync.WaitGroup
-							wg.Add(2)
-							go func() {
-								defer wg.Done()
-								for pcm := range sA.PCMOut() {
+							leftCh := sA.PCMOut()
+							rightCh := sB.PCMOut()
+							var leftQueue [][]int16
+							var rightQueue [][]int16
+							leftClosed := false
+							rightClosed := false
+
+							flushStereo := func(force bool) {
+								for len(leftQueue) > 0 && len(rightQueue) > 0 {
+									hub.PushAudio(callID, stereoInt16ToBytes(leftQueue[0], rightQueue[0]))
+									leftQueue = leftQueue[1:]
+									rightQueue = rightQueue[1:]
+								}
+
+								if !force {
+									for len(leftQueue) > 1 && len(rightQueue) == 0 {
+										hub.PushAudio(callID, stereoInt16ToBytes(leftQueue[0], nil))
+										leftQueue = leftQueue[1:]
+									}
+									for len(rightQueue) > 1 && len(leftQueue) == 0 {
+										hub.PushAudio(callID, stereoInt16ToBytes(nil, rightQueue[0]))
+										rightQueue = rightQueue[1:]
+									}
+									return
+								}
+
+								for len(leftQueue) > 0 {
+									hub.PushAudio(callID, stereoInt16ToBytes(leftQueue[0], nil))
+									leftQueue = leftQueue[1:]
+								}
+								for len(rightQueue) > 0 {
+									hub.PushAudio(callID, stereoInt16ToBytes(nil, rightQueue[0]))
+									rightQueue = rightQueue[1:]
+								}
+							}
+
+							for !leftClosed || !rightClosed {
+								select {
+								case pcm, ok := <-leftCh:
+									if !ok {
+										leftClosed = true
+										leftCh = nil
+										flushStereo(false)
+										continue
+									}
 									pcmA = append(pcmA, pcm...)
-									// 实时推送 A 路（交错立体声左声道）
-									hub.PushAudio(callID, int16SliceToBytes(pcm))
-								}
-							}()
-							go func() {
-								defer wg.Done()
-								for pcm := range sB.PCMOut() {
+									leftQueue = append(leftQueue, pcm)
+									flushStereo(false)
+
+								case pcm, ok := <-rightCh:
+									if !ok {
+										rightClosed = true
+										rightCh = nil
+										flushStereo(false)
+										continue
+									}
 									pcmB = append(pcmB, pcm...)
-									// 实时推送 B 路（交错立体声右声道）
-									hub.PushAudio(callID, int16SliceToBytes(pcm))
+									rightQueue = append(rightQueue, pcm)
+									flushStereo(false)
 								}
-							}()
-							wg.Wait()
-							// 将两路 PCM 合并为单条 []int16 传给 done：
-							// 前半段 = pcmA，后半段 = pcmB，由 WriteWAVStereo 负责交错
-							combined := append(pcmA, pcmB...)
-							done <- combined
+							}
+
+							flushStereo(true)
+
+							done <- pcmPair{left: pcmA, right: pcmB}
 						}(payload.CallID, streamA, streamB, doneCh)
 					}
 				}
@@ -203,28 +248,24 @@ func main() {
 				}
 
 				// 取出 done channel，在独立 goroutine 中等待 PCM 数据就绪后写 WAV 并更新数据库
-				var doneCh <-chan []int16
+				var doneCh <-chan pcmPair
 				if ch, ok := pcmDones[callID]; ok {
 					doneCh = ch
 					delete(pcmDones, callID)
 				}
-				go func(callID string, dur int, done <-chan []int16) {
-					var combined []int16
+				go func(callID string, dur int, done <-chan pcmPair) {
+					var pcm pcmPair
 					if done != nil {
-						combined = <-done
+						pcm = <-done
 					}
 					recPath := ""
-					if len(combined) > 0 {
-						// combined = pcmA + pcmB（前后拼接），拆分后分别作为左右声道
-						half := len(combined) / 2
-						pcmA := combined[:half]
-						pcmB := combined[half:]
+					if len(pcm.left) > 0 || len(pcm.right) > 0 {
 						safeID := strings.ReplaceAll(callID, "@", "_")
 						safeID = strings.ReplaceAll(safeID, "/", "_")
 						filename := fmt.Sprintf("%s_%s.wav",
 							time.Now().Format("20060102_150405"), safeID[:min(len(safeID), 20)])
 						recPath = filepath.Join(*recDir, filename)
-						if err := audio.WriteWAVStereo(recPath, pcmA, pcmB); err != nil {
+						if err := audio.WriteWAVStereo(recPath, pcm.left, pcm.right); err != nil {
 							log.Printf("[Main] write WAV error: %v", err)
 							recPath = ""
 						} else {
@@ -261,10 +302,23 @@ func main() {
 	srv.Shutdown(ctx)
 }
 
-func int16SliceToBytes(samples []int16) []byte {
-	buf := make([]byte, len(samples)*2)
-	for i, s := range samples {
-		binary.LittleEndian.PutUint16(buf[i*2:], uint16(s))
+func stereoInt16ToBytes(left, right []int16) []byte {
+	n := len(left)
+	if len(right) > n {
+		n = len(right)
+	}
+
+	buf := make([]byte, n*4)
+	for i := 0; i < n; i++ {
+		var l, r int16
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		binary.LittleEndian.PutUint16(buf[i*4:], uint16(l))
+		binary.LittleEndian.PutUint16(buf[i*4+2:], uint16(r))
 	}
 	return buf
 }

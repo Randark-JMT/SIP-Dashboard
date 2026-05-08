@@ -22,13 +22,17 @@ export function useLiveAudio(callId: string | null) {
 
     ws.onmessage = (e: MessageEvent<ArrayBuffer>) => {
       const int16 = new Int16Array(e.data)
-      const float32 = new Float32Array(int16.length)
-      for (let i = 0; i < int16.length; i++) {
-        float32[i] = int16[i] / 32768.0
+      const frameCount = Math.floor(int16.length / 2)
+      const left = new Float32Array(frameCount)
+      const right = new Float32Array(frameCount)
+      for (let i = 0; i < frameCount; i++) {
+        left[i] = int16[i * 2] / 32768.0
+        right[i] = int16[i * 2 + 1] / 32768.0
       }
 
-      const buffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE)
-      buffer.copyToChannel(float32, 0)
+      const buffer = audioCtx.createBuffer(2, frameCount, SAMPLE_RATE)
+      buffer.copyToChannel(left, 0)
+      buffer.copyToChannel(right, 1)
 
       const source = audioCtx.createBufferSource()
       source.buffer = buffer

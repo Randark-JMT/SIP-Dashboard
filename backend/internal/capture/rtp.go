@@ -20,7 +20,7 @@ type RTPCapture struct {
 	stopChan chan struct{}
 
 	mu      sync.RWMutex
-	streams map[string]*rtp.Stream // key: "ip:port" (被叫 RTP 地址)
+	streams map[string]*rtp.Stream // key: "ip:port"（RTP 发送端地址）
 }
 
 // NewRTPCapture 创建新的 RTP 抓包器
@@ -34,7 +34,9 @@ func NewRTPCapture(iface string, portMin, portMax int) *RTPCapture {
 	}
 }
 
-// RegisterStream 注册一个 RTP 流，与指定地址绑定
+// RegisterStream 注册一个 RTP 流，与指定远端地址绑定。
+// 仅按 RTP 包的源地址匹配，这样每个 stream 只接收一个方向的音频，
+// 避免同一腿的收发两个方向被合并进一个 stream。
 func (c *RTPCapture) RegisterStream(addr string, stream *rtp.Stream) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -98,15 +100,10 @@ func (c *RTPCapture) processPacket(pkt gopacket.Packet) {
 		return
 	}
 
-	// 尝试匹配目标地址
-	dstKey := net.JoinHostPort(ip.DstIP.String(), udp.DstPort.String())
 	srcKey := net.JoinHostPort(ip.SrcIP.String(), udp.SrcPort.String())
 
 	c.mu.RLock()
-	stream, ok := c.streams[dstKey]
-	if !ok {
-		stream, ok = c.streams[srcKey]
-	}
+	stream, ok := c.streams[srcKey]
 	c.mu.RUnlock()
 
 	if !ok {

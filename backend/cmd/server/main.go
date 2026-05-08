@@ -170,35 +170,23 @@ func main() {
 								defer wg.Done()
 								for pcm := range sA.PCMOut() {
 									pcmA = append(pcmA, pcm...)
+									// 实时推送 A 路（交错立体声左声道）
+									hub.PushAudio(callID, int16SliceToBytes(pcm))
 								}
 							}()
 							go func() {
 								defer wg.Done()
 								for pcm := range sB.PCMOut() {
 									pcmB = append(pcmB, pcm...)
-									// 实时推送 B 路（被叫→主叫方向，一般是对方说话）
+									// 实时推送 B 路（交错立体声右声道）
 									hub.PushAudio(callID, int16SliceToBytes(pcm))
 								}
 							}()
 							wg.Wait()
-							// 混音：逐采样平均，长度取两者最长
-							n := len(pcmA)
-							if len(pcmB) > n {
-								n = len(pcmB)
-							}
-							mixed := make([]int16, n)
-							for i := range mixed {
-								var a, b int32
-								if i < len(pcmA) {
-									a = int32(pcmA[i])
-								}
-								if i < len(pcmB) {
-									b = int32(pcmB[i])
-								}
-								sum := (a + b) / 2
-								mixed[i] = int16(sum)
-							}
-							done <- mixed
+							// 将两路 PCM 合并为单条 []int16 传给 done：
+							// 前半段 = pcmA，后半段 = pcmB，由 WriteWAVStereo 负责交错
+							combined := append(pcmA, pcmB...)
+							done <- combined
 						}(payload.CallID, streamA, streamB, doneCh)
 					}
 				}
@@ -221,18 +209,22 @@ func main() {
 					delete(pcmDones, callID)
 				}
 				go func(callID string, dur int, done <-chan []int16) {
-					var pcm []int16
+					var combined []int16
 					if done != nil {
-						pcm = <-done
+						combined = <-done
 					}
 					recPath := ""
-					if len(pcm) > 0 {
+					if len(combined) > 0 {
+						// combined = pcmA + pcmB（前后拼接），拆分后分别作为左右声道
+						half := len(combined) / 2
+						pcmA := combined[:half]
+						pcmB := combined[half:]
 						safeID := strings.ReplaceAll(callID, "@", "_")
 						safeID = strings.ReplaceAll(safeID, "/", "_")
 						filename := fmt.Sprintf("%s_%s.wav",
 							time.Now().Format("20060102_150405"), safeID[:min(len(safeID), 20)])
 						recPath = filepath.Join(*recDir, filename)
-						if err := audio.WriteWAV(recPath, pcm); err != nil {
+						if err := audio.WriteWAVStereo(recPath, pcmA, pcmB); err != nil {
 							log.Printf("[Main] write WAV error: %v", err)
 							recPath = ""
 						} else {

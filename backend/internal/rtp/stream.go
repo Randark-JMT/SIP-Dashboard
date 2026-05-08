@@ -35,6 +35,8 @@ type Stream struct {
 	ssrcs       map[uint32]*ssrcInfo // 按 SSRC 独立追踪序列号
 	pcmOut      chan []int16         // 输出 PCM 数据
 	rawOut      chan []byte          // 输出原始 RTP payload (用于实时流)
+	closed      bool                 // 是否已关闭，受 mu 保护
+	closeOnce   sync.Once            // 确保通道只关闭一次
 }
 
 // NewStream 创建新的 RTP 流重组器
@@ -146,6 +148,11 @@ func (s *Stream) flushSSRC(si *ssrcInfo) {
 		si.buf = append(si.buf[:found], si.buf[found+1:]...)
 		si.lastSeq = pkt.seq
 
+		// 流已关闭则丢弃后续包（close 在 mu 外执行，但 closed 标志在 mu 内设置）
+		if s.closed {
+			return
+		}
+
 		// 输出原始 payload（用于实时流）
 		rawCopy := make([]byte, len(pkt.payload))
 		copy(rawCopy, pkt.payload)
@@ -163,8 +170,15 @@ func (s *Stream) flushSSRC(si *ssrcInfo) {
 	}
 }
 
-// Close 关闭流通道
+// Close 关闭流通道，可安全多次调用
 func (s *Stream) Close() {
-	close(s.pcmOut)
-	close(s.rawOut)
+	// 先在锁内设置 closed，使 flushSSRC 不再向通道发送
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	// 再关闭通道（只执行一次）
+	s.closeOnce.Do(func() {
+		close(s.pcmOut)
+		close(s.rawOut)
+	})
 }

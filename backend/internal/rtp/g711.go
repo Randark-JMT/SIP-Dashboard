@@ -1,5 +1,22 @@
 package rtp
 
+const (
+	pcmGainMultiplier = 3
+	pcmMaxSample      = 32767
+	pcmMinSample      = -32768
+)
+
+func applyPCMGain(sample int16) int16 {
+	amplified := int32(sample) * pcmGainMultiplier
+	if amplified > pcmMaxSample {
+		return pcmMaxSample
+	}
+	if amplified < pcmMinSample {
+		return pcmMinSample
+	}
+	return int16(amplified)
+}
+
 // UlawToPCM 将 G.711 μ-law (PCMU, payload type 0) 字节解码为 16-bit PCM
 func UlawToPCM(ulaw byte) int16 {
 	ulaw ^= 0xFF
@@ -39,9 +56,9 @@ func DecodeToPCM(payload []byte, payloadType int) []int16 {
 	pcm := make([]int16, len(payload))
 	for i, b := range payload {
 		if payloadType == 8 {
-			pcm[i] = AlawToPCM(b)
+			pcm[i] = applyPCMGain(AlawToPCM(b))
 		} else {
-			pcm[i] = UlawToPCM(b)
+			pcm[i] = applyPCMGain(UlawToPCM(b))
 		}
 	}
 	return pcm

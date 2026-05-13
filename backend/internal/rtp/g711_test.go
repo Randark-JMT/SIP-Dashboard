@@ -4,9 +4,9 @@ import "testing"
 
 func TestApplyPCMGain(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  int16
-		want   int16
+		name  string
+		input int16
+		want  int16
 	}{
 		{name: "triple positive sample", input: 1000, want: 3000},
 		{name: "triple negative sample", input: -1000, want: -3000},
